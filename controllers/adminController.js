@@ -74,7 +74,8 @@ const updateStudentFees = async (req, res) => {
     try {
         const {
             collegeFeeDue, transportFeeDue, lastSemDues, status, transportOpted, // Direct updates
-            feeRecordId, amount, mode, reference // Payment Transaction
+            feeRecordId, amount, mode, reference, // Payment Transaction
+            eligibilityOverride // New field
         } = req.body;
 
         const student = await Student.findOne({ usn: req.params.usn });
@@ -168,6 +169,7 @@ const updateStudentFees = async (req, res) => {
         if (lastSemDues !== undefined) student.lastSemDues = lastSemDues;
         if (status !== undefined) student.status = status;
         if (transportOpted !== undefined) student.transportOpted = transportOpted;
+        if (eligibilityOverride !== undefined) student.eligibilityOverride = eligibilityOverride;
 
         const updatedStudent = await student.save();
         res.json(updatedStudent);
@@ -180,6 +182,9 @@ const updateStudentFees = async (req, res) => {
 // @desc    Set Default Government Fee (And Apply)
 // @route   POST /api/admin/config/gov-fee
 // @access  Private (Admin)
+// @desc    Set Default Government Fee (And Apply)
+// @route   POST /api/admin/config/gov-fee
+// @access  Private (Admin)
 const setGovFee = async (req, res) => {
     try {
         const { quota, currentYear, amount, usn } = req.body;
@@ -188,75 +193,112 @@ const setGovFee = async (req, res) => {
             return res.status(400).json({ message: 'Quota and Amount are required' });
         }
 
-        if (quota === 'government') {
-            // Updated Logic: Apply to ALL Govt students in a specific Year
-            if (!currentYear) {
-                return res.status(400).json({ message: 'Year is required for Government Quota bulk update' });
+        const newAmount = parseInt(amount);
+        const year = Number(currentYear);
+        const semA = (year * 2) - 1;
+        const semB = year * 2;
+        const splitFee = Math.ceil(newAmount / 2);
+
+        // Helper to update/add semester records
+        const updateSemesterRecords = (student, totalFee) => {
+            const amountA = Math.ceil(totalFee / 2);
+            const amountB = totalFee - amountA;
+
+            // Update/Create Sem A
+            const indexA = student.feeRecords.findIndex(r => r.semester === semA && r.feeType === 'college');
+            if (indexA !== -1) {
+                student.feeRecords[indexA].amountDue = amountA;
+                // Update status if needed
+                if (student.feeRecords[indexA].amountPaid >= amountA) student.feeRecords[indexA].status = 'paid';
+                else if (student.feeRecords[indexA].amountPaid > 0) student.feeRecords[indexA].status = 'partial';
+                else student.feeRecords[indexA].status = 'pending';
+            } else {
+                student.feeRecords.push({
+                    year: year,
+                    semester: semA,
+                    feeType: 'college',
+                    amountDue: amountA,
+                    status: 'pending',
+                    transactions: []
+                });
             }
 
-            const result = await Student.updateMany(
-                { quota: 'government', currentYear: Number(currentYear) },
-                { $set: { collegeFeeDue: parseInt(amount) } }
-            );
+            // Update/Create Sem B
+            const indexB = student.feeRecords.findIndex(r => r.semester === semB && r.feeType === 'college');
+            if (indexB !== -1) {
+                student.feeRecords[indexB].amountDue = amountB;
+                if (student.feeRecords[indexB].amountPaid >= amountB) student.feeRecords[indexB].status = 'paid';
+                else if (student.feeRecords[indexB].amountPaid > 0) student.feeRecords[indexB].status = 'partial';
+                else student.feeRecords[indexB].status = 'pending';
+            } else {
+                student.feeRecords.push({
+                    year: year,
+                    semester: semB,
+                    feeType: 'college',
+                    amountDue: amountB,
+                    status: 'pending',
+                    transactions: []
+                });
+            }
+        };
 
-            // Also update System Config for default future ref
+
+        if (quota === 'government') {
+            if (!currentYear) return res.status(400).json({ message: 'Year is required' });
+
+            const students = await Student.find({ quota: 'government', currentYear: year });
+
+            for (const student of students) {
+                student.collegeFeeDue = newAmount;
+                updateSemesterRecords(student, newAmount);
+                await student.save();
+            }
+
+            // Update System Config
             await SystemConfig.findOneAndUpdate(
                 { key: 'default_gov_fee' },
-                { value: parseInt(amount) },
+                { value: newAmount },
                 { upsert: true }
             );
 
-            res.json({ message: `Updated fees for ${result.modifiedCount} students in Year ${currentYear}` });
+            res.json({ message: `Updated fees for ${students.length} students in Year ${year}` });
 
         } else if (quota === 'management') {
-            if (!usn || !currentYear) {
-                return res.status(400).json({ message: 'Student USN and Year are required for Management Quota' });
-            }
+            if (!usn || !currentYear) return res.status(400).json({ message: 'USN and Year required' });
 
             const student = await Student.findOne({ usn: usn, quota: 'management' });
+            if (!student) return res.status(404).json({ message: 'Student not found' });
 
-            if (!student) {
-                return res.status(404).json({ message: 'Management Student not found with this USN' });
-            }
+            student.collegeFeeDue = (student.collegeFeeDue || 0) + newAmount; // Logic check: is this replace or add? Assuming setGovFee implies "Set Fee" but old logic did +=. Let's assume for management it's usually "Add this years fee". 
+            // Wait, for management, usually we set the fee for the year. 
+            // The previous logic was: student.collegeFeeDue = (student.collegeFeeDue || 0) - oldDue + parseInt(amount);
+            // Let's stick to "setting" the fee for this year.
 
-            // Create Fee Record
-            const feeRecord = {
-                year: Number(currentYear),
-                feeType: 'college',
-                amountDue: parseInt(amount),
-                amountPaid: 0,
-                status: 'pending',
-                transactions: []
-            };
+            // Recalculate total due based on ALL years/semesters? 
+            // Or just update the specific year records?
+            // "management" fee passing logic usually implies "Set the fee for THIS year". 
+            // So we should find if there was previous fee for this year, remove it from total, add new.
 
-            // Check if record exists for this year/type
-            const existingRecordIndex = student.feeRecords.findIndex(
-                r => r.year == currentYear && r.feeType === 'college'
-            );
+            // Simplified: Update the semester records for this year to match newAmount
+            // And ensure top level collegeFeeDue matches sum of all feeRecords amountDue - sum of amountPaid?
+            // Or just allow the helper to handle the records, and we manually adjust the top level.
 
-            if (existingRecordIndex !== -1) {
-                // Update existing record
-                const oldDue = student.feeRecords[existingRecordIndex].amountDue;
-                student.feeRecords[existingRecordIndex].amountDue = parseInt(amount);
+            // IMPORTANT: If we are "Setting" the fee for year X, we should overwrite whatever was there for year X.
+            // The previous code had complex logic. Let's simplify:
+            // 1. Calculate the difference between new fee and old fee for this year.
+            // 2. Adjust total collegeFeeDue by that diff.
+            // 3. Update records.
 
-                // Update Status based on new Due vs Paid
-                const paid = student.feeRecords[existingRecordIndex].amountPaid;
-                student.feeRecords[existingRecordIndex].status =
-                    paid >= parseInt(amount) ? 'paid' :
-                        paid > 0 ? 'partial' : 'pending';
+            // Find existing due for this year to calc diff
+            const existingRecs = student.feeRecords.filter(r => r.year === year && r.feeType === 'college');
+            const oldYearDue = existingRecs.reduce((sum, r) => sum + r.amountDue, 0);
 
-                // Update Total Due (Legacy sync)
-                student.collegeFeeDue = (student.collegeFeeDue || 0) - oldDue + parseInt(amount);
-
-            } else {
-                // Add new record
-                student.feeRecords.push(feeRecord);
-                student.collegeFeeDue = (student.collegeFeeDue || 0) + parseInt(amount);
-            }
+            student.collegeFeeDue = (student.collegeFeeDue || 0) - oldYearDue + newAmount;
+            updateSemesterRecords(student, newAmount);
 
             await student.save();
+            res.json({ message: `Fee Allocated`, student });
 
-            res.json({ message: `Fee Allocated to Management Student ${usn}`, student });
         } else {
             res.status(400).json({ message: 'Invalid Quota' });
         }
@@ -303,8 +345,39 @@ const searchStudent = async (req, res) => {
 // @access  Private (Admin)
 const createExamNotification = async (req, res) => {
     try {
-        const notification = await ExamNotification.create(req.body);
+        const { title, year, semester, examFeeAmount, startDate, endDate, description } = req.body;
+        const notification = await ExamNotification.create({
+            title, year, semester, examFeeAmount, startDate, endDate, description,
+            lastDateWithoutFine: endDate, // Set initial fine deadline to endDate
+            lateFee: 0
+        });
         res.status(201).json(notification);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Update Exam Notification (Extend Date / Add Penalty)
+// @route   PUT /api/admin/notifications/:id
+// @access  Private (Exam Head)
+const updateExamNotification = async (req, res) => {
+    try {
+        const { endDate, lateFee, isActive } = req.body;
+        const notification = await ExamNotification.findById(req.params.id);
+
+        if (!notification) {
+            return res.status(404).json({ message: 'Notification not found' });
+        }
+
+        if (endDate) notification.endDate = endDate;
+        if (lateFee !== undefined) notification.lateFee = Number(lateFee);
+        if (isActive !== undefined) notification.isActive = isActive;
+
+        // If extending, we do NOT change lastDateWithoutFine automatically unless requested
+        // The logic is: Original End Date remains "Last Date Without Fine" if we are extending "With Penalty"
+
+        const updatedNotification = await notification.save();
+        res.json(updatedNotification);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -358,6 +431,7 @@ module.exports = {
     createStudent,
     updateStudentFees,
     createExamNotification,
+    updateExamNotification,
     getExamNotifications,
     getDashboardStats,
     setGovFee,

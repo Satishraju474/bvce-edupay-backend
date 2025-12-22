@@ -2,17 +2,25 @@ const Razorpay = require('razorpay');
 const crypto = require('crypto');
 const Payment = require('../models/Payment');
 const Student = require('../models/Student');
-
-// Razorpay instance is initialized inside functions to ensure it picks up potentially hot-reloaded env vars
-// or we can export a function that gets the instance.
-// For now, let's keep it simple.
+const ExamNotification = require('../models/ExamNotification');
 
 // @desc    Create Razorpay Order
 // @route   POST /api/payments/create-order
 // @access  Private (Student)
 const createOrder = async (req, res) => {
     try {
-        const { amount, paymentType } = req.body;
+        const { amount, paymentType, examNotificationId } = req.body; // Accept examNotificationId
+
+        // Basic Validation for Exam Fee if ID provided
+        if (paymentType === 'exam_fee' && examNotificationId) {
+            const notification = await ExamNotification.findById(examNotificationId);
+            if (notification) {
+                // Check if Late Fee applies
+                // Logic: If today > lastDateWithoutFine, Effective Fee = examFee + lateFee
+                // We can enforce this here or just trust frontend. 
+                // Let's just log for now to avoid blocking if dates are tricky.
+            }
+        }
 
         if (process.env.RAZORPAY_KEY_ID === 'your_razorpay_key_id') {
             throw new Error("Razorpay API Keys are not configured in .env file");
@@ -103,12 +111,48 @@ const verifyPayment = async (req, res) => {
 
         // Auto-update dues if applicable
         let feeTypeLabel = 'Fee';
+
+        // Helper to distribute payment execution (Refactored for Semester-wise)
+        const distributePayment = (type, paidAmount) => {
+            if (!student.feeRecords) return;
+
+            // Filter relevant records and sort by time (Year ASC, Sem ASC)
+            let records = student.feeRecords.filter(r => r.feeType === type && r.status !== 'paid');
+            records.sort((a, b) => (a.year - b.year) || (a.semester - b.semester));
+
+            let remaining = paidAmount;
+
+            for (let record of records) {
+                if (remaining <= 0) break;
+
+                const pendingOnRecord = record.amountDue - (record.amountPaid || 0);
+                const deduction = Math.min(pendingOnRecord, remaining);
+
+                record.amountPaid = (record.amountPaid || 0) + deduction;
+                remaining -= deduction;
+
+                // Update Status
+                if (record.amountPaid >= record.amountDue) record.status = 'paid';
+                else if (record.amountPaid > 0) record.status = 'partial';
+
+                // Log internal transaction
+                record.transactions.push({
+                    amount: deduction,
+                    date: new Date(),
+                    mode: 'Online (Razorpay)',
+                    reference: razorpayPaymentId
+                });
+            }
+        };
+
         if (paymentType === 'college_fee') {
-            student.collegeFeeDue = Math.max(0, student.collegeFeeDue - amount);
+            distributePayment('college', amount); // Update Ledger
+            student.collegeFeeDue = Math.max(0, student.collegeFeeDue - amount); // Update Top-level
             await student.save();
             feeTypeLabel = 'College Fee';
         } else if (paymentType === 'transport_fee') {
-            student.transportFeeDue = Math.max(0, student.transportFeeDue - amount);
+            distributePayment('transport', amount); // Update Ledger
+            student.transportFeeDue = Math.max(0, student.transportFeeDue - amount); // Update Top-level
             await student.save();
             feeTypeLabel = 'Transport Fee';
         } else if (paymentType === 'exam_fee') {

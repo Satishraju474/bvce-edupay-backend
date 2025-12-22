@@ -32,19 +32,82 @@ const checkEligibility = async (req, res) => {
         let reasons = [];
 
         if (student.status !== 'active') {
-            isEligible = false;
+            isEligible = false; // Backward compat
             reasons.push(`Student status is ${student.status}`);
         }
 
-        if (student.collegeFeeDue > 0) {
-            isEligible = false;
-            reasons.push(`Pending College Fee: ${student.collegeFeeDue}`);
+        // Logic for Split Eligibility (Odd Sem vs Even Sem Exams)
+        let eligibleForOddSem = false;
+        let eligibleForEvenSem = false;
+        let percentagePaid = 0;
+
+        // Calculate Total Current Year Fee (College + Transport) based on feeRecords for current year
+        const currentYearRecords = student.feeRecords.filter(r => r.year === student.currentYear && ['college', 'transport'].includes(r.feeType));
+        const totalDue = currentYearRecords.reduce((sum, r) => sum + r.amountDue, 0);
+        const totalPaid = currentYearRecords.reduce((sum, r) => sum + (r.amountPaid || 0), 0);
+
+        // If no fee records yet, fallback to top-level dues (Assuming fully unpaid if no records or fresh start)
+        const effectiveTotalDue = totalDue > 0 ? totalDue : (student.collegeFeeDue + student.transportFeeDue); // Approx fallback
+        const effectivePaid = totalDue > 0 ? totalPaid : 0;
+
+        if (effectiveTotalDue > 0) {
+            percentagePaid = (effectivePaid / effectiveTotalDue) * 100;
+        } else {
+            // If 0 due, assume eligible (scholarship or fully paid previously?)
+            // Or check if top level due is 0.
+            if (student.collegeFeeDue === 0 && student.transportFeeDue === 0) percentagePaid = 100;
         }
 
-        if (student.transportFeeDue > 0) {
-            isEligible = false;
-            reasons.push(`Pending Transport Fee: ${student.transportFeeDue}`);
+        // Rule: Odd Sem (e.g. Sem 1) requires >= 50% Clearance
+        if (percentagePaid >= 50) {
+            eligibleForOddSem = true;
+        } else {
+            reasons.push(`Odd Sem Eligibility: Paid ${percentagePaid.toFixed(1)}% (Need 50%)`);
         }
+
+        // Rule: Even Sem (e.g. Sem 2) requires 100% Clearance
+        if (percentagePaid >= 99.9) { // Float tolerance
+            eligibleForEvenSem = true;
+        } else {
+            if (eligibleForOddSem) reasons.push(`Even Sem Eligibility: Paid ${percentagePaid.toFixed(1)}% (Need 100%)`);
+        }
+
+        // Check Override
+        if (student.eligibilityOverride === true) {
+            eligibleForOddSem = true;
+            eligibleForEvenSem = true;
+            reasons = ['Administratively Overridden (Eligible)'];
+        } else if (student.eligibilityOverride === false) {
+            eligibleForOddSem = false;
+            eligibleForEvenSem = false;
+            reasons = ['Administratively Overridden (Ineligible)'];
+        }
+
+        // Backward compatibility: "isEligible" generally implies ability to pay *something*. 
+        // We'll leave it as true if even Odd is eligible, but the frontend should check specific flags.
+        isEligible = eligibleForOddSem;
+
+        if (student.lastSemDues > 0) {
+            isEligible = false;
+            eligibleForOddSem = false;
+            eligibleForEvenSem = false;
+            reasons.push(`Pending Last Semester Dues: ${student.lastSemDues}`);
+        }
+
+        res.json({
+            isEligible,
+            eligibleForOddSem,
+            eligibleForEvenSem,
+            reasons,
+            student: {
+                usn: student.usn,
+                name: req.user.name,
+                collegeFeeDue: student.collegeFeeDue,
+                transportFeeDue: student.transportFeeDue,
+                lastSemDues: student.lastSemDues,
+                percentagePaid
+            }
+        });
 
         if (student.lastSemDues > 0) {
             isEligible = false;

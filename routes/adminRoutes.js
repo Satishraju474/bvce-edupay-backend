@@ -6,6 +6,7 @@ const {
     createExamNotification,
     getDashboardStats,
     getExamNotifications,
+    updateExamNotification,
     setGovFee,
     getSystemConfig,
     searchStudent
@@ -19,6 +20,7 @@ router.get('/students/search', protect, authorize('admin'), searchStudent);
 router.post('/students', protect, authorize('admin'), createStudent);
 router.put('/students/:usn/fees', protect, authorize('admin'), updateStudentFees);
 router.post('/notifications', protect, authorize('admin', 'exam_head'), createExamNotification);
+router.put('/notifications/:id', protect, authorize('admin', 'exam_head'), updateExamNotification);
 router.get('/notifications', protect, getExamNotifications);
 router.get('/stats', protect, authorize('admin', 'principal', 'exam_head'), getDashboardStats);
 

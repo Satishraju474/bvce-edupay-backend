@@ -45,16 +45,66 @@ const createStudent = async (req, res) => {
         }
 
         // 3. Create Student Profile
+        // 3. Create Student Profile
+        const currentYearNum = parseInt(currentYear) || 1;
+        const semA = (currentYearNum * 2) - 1;
+        const semB = currentYearNum * 2;
+
+        const feeRecords = [];
+
+        // College Fee Split
+        if (initialCollegeFee > 0) {
+            const splitFee = Math.ceil(initialCollegeFee / 2);
+            feeRecords.push({
+                year: currentYearNum,
+                semester: semA,
+                feeType: 'college',
+                amountDue: splitFee,
+                status: 'pending',
+                transactions: []
+            });
+            feeRecords.push({
+                year: currentYearNum,
+                semester: semB,
+                feeType: 'college',
+                amountDue: initialCollegeFee - splitFee, // Handle odd numbers
+                status: 'pending',
+                transactions: []
+            });
+        }
+
+        // Transport Fee Split
+        if (initialTransportFee > 0) {
+            const splitTrans = Math.ceil(initialTransportFee / 2);
+            feeRecords.push({
+                year: currentYearNum,
+                semester: semA,
+                feeType: 'transport',
+                amountDue: splitTrans,
+                status: 'pending',
+                transactions: []
+            });
+            feeRecords.push({
+                year: currentYearNum,
+                semester: semB,
+                feeType: 'transport',
+                amountDue: initialTransportFee - splitTrans,
+                status: 'pending',
+                transactions: []
+            });
+        }
+
         const student = await Student.create({
             user: user._id,
             usn: username,
             department,
-            currentYear: parseInt(currentYear) || 1, // Default to 1 if missing
+            currentYear: currentYearNum,
             quota,
             entry,
             transportOpted: transportOpted || false,
-            collegeFeeDue: initialCollegeFee,
-            transportFeeDue: initialTransportFee
+            collegeFeeDue: initialCollegeFee, // Keep total for high-level view
+            transportFeeDue: initialTransportFee,
+            feeRecords: feeRecords
         });
 
         res.status(201).json(student);

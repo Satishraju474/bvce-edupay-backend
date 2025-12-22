@@ -17,7 +17,8 @@ const studentSchema = mongoose.Schema({
 
     // Professional Fee Management (Ledger)
     feeRecords: [{
-        year: { type: Number, required: true }, // Changed from semester
+        year: { type: Number, required: true },
+        semester: { type: Number, required: true }, // Added Semester tracking
         feeType: { type: String, enum: ['college', 'transport', 'other'], required: true },
         amountDue: { type: Number, required: true },
         amountPaid: { type: Number, default: 0 },
@@ -30,7 +31,9 @@ const studentSchema = mongoose.Schema({
         }]
     }],
 
-    // Eligibility Override or Cache (Optional, but useful for quick checks)
+    // Eligibility Override
+    eligibilityOverride: { type: Boolean, default: null }, // true=Force Eligible, false=Force Ineligible
+
     // Logic will primarily calculate this dynamically
 }, { timestamps: true });
 
