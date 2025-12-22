@@ -18,9 +18,15 @@ const createOrder = async (req, res) => {
             throw new Error("Razorpay API Keys are not configured in .env file");
         }
 
+        const keyId = process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.replace(/"/g, '').trim() : '';
+        const keySecret = process.env.RAZORPAY_KEY_SECRET ? process.env.RAZORPAY_KEY_SECRET.replace(/"/g, '').trim() : '';
+
+        console.log("Razorpay Init - Key Length:", keyId.length, "Secret Length:", keySecret.length);
+        console.log("Using Razorpay Key:", keyId.substring(0, 8) + "...");
+
         const instance = new Razorpay({
-            key_id: process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.replace(/"/g, '').trim() : '',
-            key_secret: process.env.RAZORPAY_KEY_SECRET ? process.env.RAZORPAY_KEY_SECRET.replace(/"/g, '').trim() : '',
+            key_id: keyId,
+            key_secret: keySecret,
         });
 
         const options = {
@@ -37,7 +43,12 @@ const createOrder = async (req, res) => {
 
     } catch (error) {
         console.error("Razorpay Order Error:", error);
-        res.status(500).json({ message: error.message });
+
+        if (error.statusCode === 401) {
+            return res.status(500).json({ message: "Razorpay Auth Failed: Invalid Key ID or Secret" });
+        }
+
+        res.status(500).json({ message: error.error?.description || error.message || "Payment Initialization Failed" });
     }
 };
 

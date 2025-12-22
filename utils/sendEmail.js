@@ -14,6 +14,11 @@ const sendEmail = async (options) => {
         }
     });
 
+    if (!process.env.EMAIL_USER || process.env.EMAIL_USER === 'your_email@gmail.com') {
+        console.log("Skipping Email: EMAIL_USER is not configured in .env");
+        return;
+    }
+
     // 2. Define email options
     const mailOptions = {
         from: 'College Fee System <noreply@college.edu>',
